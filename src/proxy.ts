@@ -1,7 +1,7 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
-const publicPrefixes = ["/sign-in", "/sign-up", "/docs", "/api/health", "/api/agent", "/api/receipts", "/mcp", "/.well-known"];
+const publicPrefixes = ["/sign-in", "/sign-up", "/docs", "/design-partner", "/api/health", "/api/design-partner", "/api/agent", "/api/receipts", "/mcp", "/.well-known"];
 const protect = clerkMiddleware(async (auth) => { await auth.protect(); });
 
 export default function proxy(request: NextRequest, event: NextFetchEvent) {

@@ -4,7 +4,7 @@ import { IconArrowRight, IconBraces, IconKey, IconReceipt, IconShieldCheck } fro
 export default function HomePage() {
   return (
     <main className="landing">
-      <nav className="landing-nav"><Link href="/" className="wordmark">Agent Access</Link><div><Link href="/docs">Docs</Link><Link className="button ghost" href="/sign-in">Sign in</Link><Link className="button primary" href="/sign-up">Start building</Link></div></nav>
+      <nav className="landing-nav"><Link href="/" className="wordmark">Agent Access</Link><div><Link href="/docs">Docs</Link><Link href="/design-partner">Design partners</Link><Link className="button ghost" href="/sign-in">Sign in</Link><Link className="button primary" href="/sign-up">Start building</Link></div></nav>
       <section className="hero">
         <p className="eyebrow">Infrastructure for the agentic internet</p>
         <h1>Let AI agents become real customers of your software.</h1>
