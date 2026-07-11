@@ -1,5 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { query } from "./db";
 import { slugify } from "./ids";
 
@@ -42,4 +43,15 @@ export async function assertProjectAccess(projectId: string) {
   const rows = await query<{ id: string }>("SELECT id FROM projects WHERE id = $1 AND organization_id = $2", [projectId, organization.id]);
   if (!rows[0]) throw new Error("Project not found");
   return organization;
+}
+
+export async function isCurrentUserAdmin() {
+  const { userId } = await auth();
+  return !!userId && !!process.env.ADMIN_CLERK_USER_ID && userId === process.env.ADMIN_CLERK_USER_ID;
+}
+
+export async function requireAdminUserId() {
+  const userId = await requireUserId();
+  if (!process.env.ADMIN_CLERK_USER_ID || userId !== process.env.ADMIN_CLERK_USER_ID) notFound();
+  return userId;
 }
