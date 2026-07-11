@@ -1,6 +1,7 @@
 import { query } from "./db";
 import { createOpaqueId, hashSecret } from "./ids";
 import { signReceipt, verifyReceipt } from "./receipts";
+import { invokeVendorConnection, type VendorConnection } from "./vendor-connection";
 
 type CredentialContext = {
   credential_id: string;
@@ -18,12 +19,14 @@ type CredentialContext = {
   policy: string;
   scope: string;
   organization_id: string;
+  project_id: string;
 };
 
 export type ExecutionReceipt = Record<string, unknown> & {
   receipt_id: string;
   status_code: number;
   response: unknown;
+  result?: unknown;
   signature: string;
   replayed?: boolean;
 };
@@ -39,7 +42,7 @@ export async function executeCapability(options: {
     `SELECT c.id credential_id, a.id agent_account_id, a.name agent_name,
             p.id principal_id, p.display_name principal_name, d.id delegation_id,
             s.id sandbox_id, s.slug sandbox_slug, cap.id capability_id,
-            cap.operation_id, cap.method, cap.path, cap.policy, cap.scope, project.organization_id
+            cap.operation_id, cap.method, cap.path, cap.policy, cap.scope, project.organization_id, project.id project_id
      FROM credentials c
      JOIN agent_accounts a ON a.id = c.agent_account_id
      JOIN delegations d ON d.id = c.delegation_id
@@ -71,10 +74,36 @@ export async function executeCapability(options: {
 
   const start = Date.now();
   const resourceType = context.path.split("/").filter(Boolean)[0] ?? "resources";
-  let responseBody: Record<string, unknown> | Record<string, unknown>[];
+  let responseBody: unknown;
+  let receiptRequest: unknown = options.body ?? {};
+  let receiptResponse: unknown;
   let statusCode = 200;
+  let durationMs: number;
+  let upstream = false;
+  let upstreamOrigin: string | null = null;
+  let requestHash: string | null = null;
+  let responseHash: string | null = null;
+  let responseBytes: number | null = null;
 
-  if (context.method === "GET") {
+  const connections = await query<VendorConnection>("SELECT * FROM vendor_connections WHERE project_id=$1 AND status <> 'revoked'", [context.project_id]);
+  const connection = connections[0];
+
+  if (connection) {
+    if (context.method !== "GET" && context.method !== "HEAD") throw new ExecutionError("Shadow Mode only permits read-only upstream capabilities", 403);
+    let result;
+    try { result = await invokeVendorConnection(connection, context.path, options.body ?? {}); }
+    catch (error) { throw new ExecutionError(error instanceof Error ? error.message : "Upstream invocation failed", 502); }
+    responseBody = result.body;
+    statusCode = result.statusCode;
+    durationMs = result.durationMs;
+    upstream = true;
+    upstreamOrigin = result.origin;
+    requestHash = result.requestHash;
+    responseHash = result.responseHash;
+    responseBytes = result.responseBytes;
+    receiptRequest = { normalized_path: result.normalizedPath, body_hash: result.requestHash };
+    receiptResponse = { body_hash: result.responseHash, byte_size: result.responseBytes, status_code: result.statusCode };
+  } else if (context.method === "GET") {
     responseBody = await query<Record<string, unknown>>(
       "SELECT id, data, created_at, updated_at FROM sandbox_resources WHERE sandbox_id = $1 AND resource_type = $2 ORDER BY created_at DESC LIMIT 100",
       [context.sandbox_id, resourceType],
@@ -88,25 +117,26 @@ export async function executeCapability(options: {
     responseBody = { status: "accepted", capability: context.operation_id, result: options.body ?? {} };
   }
 
-  const durationMs = Math.max(1, Date.now() - start);
+  durationMs ??= Math.max(1, Date.now() - start);
+  receiptResponse ??= responseBody;
   const executions = await query<{ id: string; created_at: string }>(
-    `INSERT INTO executions (sandbox_id, agent_account_id, capability_id, idempotency_key, request_body, response_body, status_code, duration_ms, policy_decision)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9) RETURNING id, created_at`,
-    [context.sandbox_id, context.agent_account_id, context.capability_id, options.idempotencyKey, JSON.stringify(options.body ?? {}), JSON.stringify(responseBody), statusCode, durationMs, context.policy],
+    `INSERT INTO executions (sandbox_id,agent_account_id,capability_id,idempotency_key,request_body,response_body,status_code,duration_ms,policy_decision,upstream,upstream_origin,request_hash,response_hash,response_bytes)
+     VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id,created_at`,
+    [context.sandbox_id, context.agent_account_id, context.capability_id, options.idempotencyKey, JSON.stringify(upstream ? receiptRequest : options.body ?? {}), JSON.stringify(upstream ? receiptResponse : responseBody), statusCode, durationMs, context.policy, upstream, upstreamOrigin, requestHash, responseHash, responseBytes],
   );
   const receiptId = createOpaqueId("rcp");
   const payload = {
     receipt_id: receiptId,
     execution_id: executions[0].id,
     issued_at: executions[0].created_at,
-    environment: "sandbox",
+    environment: upstream ? "staging-shadow" : "sandbox",
     principal: { id: context.principal_id, name: context.principal_name },
     agent: { id: context.agent_account_id, name: context.agent_name, type: "external" },
     delegation_id: context.delegation_id,
     capability: { id: context.capability_id, operation_id: context.operation_id, method: context.method, path: context.path, scope: context.scope, policy: context.policy },
     idempotency_key: options.idempotencyKey,
-    request: options.body ?? {},
-    response: responseBody,
+    request: receiptRequest,
+    response: receiptResponse,
     status_code: statusCode,
     duration_ms: durationMs,
   };
@@ -122,7 +152,7 @@ export async function executeCapability(options: {
      VALUES ($1,'agent',$2,'capability.executed','execution',$3,$4::jsonb)`,
     [context.organization_id, context.agent_account_id, executions[0].id, JSON.stringify({ capability: context.operation_id, status_code: statusCode, receipt_id: receiptId })],
   );
-  return { ...receiptPayload, signature: signed.signature, verified: verifyReceipt(receiptPayload, signed.signature), response: responseBody };
+  return { ...receiptPayload, signature: signed.signature, verified: verifyReceipt(receiptPayload, signed.signature), result: responseBody };
 }
 
 export class ExecutionError extends Error {

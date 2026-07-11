@@ -24,4 +24,9 @@ describe("parseOpenApi", () => {
   it("rejects documents without operations", () => {
     expect(() => parseOpenApi('openapi: 3.1.0\ninfo:\n  title: Empty\n  version: 1\npaths: {}')).toThrow();
   });
+
+  it("bundles local schema references for machine-facing capabilities", () => {
+    const parsed = parseOpenApi(JSON.stringify({ openapi: "3.1.0", info: { title: "Referenced", version: "1" }, components: { schemas: { Project: { type: "object", properties: { name: { type: "string" } } } } }, paths: { "/projects": { get: { operationId: "list", responses: { 200: { description: "ok", content: { "application/json": { schema: { $ref: "#/components/schemas/Project" } } } } } } } } }));
+    expect(parsed.capabilities[0].outputSchema).toEqual({ type: "object", properties: { name: { type: "string" } } });
+  });
 });

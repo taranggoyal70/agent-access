@@ -26,7 +26,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
       const name = String(body.params?.name ?? "");
       const args = (body.params?.arguments ?? {}) as Record<string, unknown>;
       const receipt = await executeCapability({ sandboxSlug: slug, token: authorization.slice(7), operationId: name, body: args, idempotencyKey: request.headers.get("idempotency-key") ?? createOpaqueId("mcp") });
-      return rpc(body.id, { content: [{ type: "text", text: JSON.stringify(receipt.response) }], structuredContent: receipt.response, _meta: { receipt_id: receipt.receipt_id, signature: receipt.signature } });
+      const result = receipt.result ?? receipt.response;
+      return rpc(body.id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, _meta: { receipt_id: receipt.receipt_id, signature: receipt.signature } });
     }
     return Response.json({ jsonrpc: "2.0", id: body.id ?? null, error: { code: -32601, message: "Method not found" } }, { status: 404 });
   } catch (error) {

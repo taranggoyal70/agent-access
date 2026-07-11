@@ -5,6 +5,11 @@ export async function POST(_: Request, { params }: { params: Promise<{ projectId
   try {
     const { projectId } = await params;
     const organization = await assertProjectAccess(projectId);
+    const connections = await query<{ id: string; status: string }>("SELECT id,status FROM vendor_connections WHERE project_id=$1 AND status <> 'revoked'", [projectId]);
+    if (connections[0]) {
+      if (connections[0].status !== "active") throw new Error("Test and activate the staging Vendor Connection before publishing");
+      await query("UPDATE capabilities SET enabled=false,updated_at=now() WHERE project_id=$1 AND method NOT IN ('GET','HEAD')", [projectId]);
+    }
     const enabled = await query<{ count: string }>("SELECT count(*)::text count FROM capabilities WHERE project_id = $1 AND enabled AND policy <> 'prohibited'", [projectId]);
     if (Number(enabled[0].count) === 0) throw new Error("At least one allowed capability is required");
     const sandboxes = await query<{ id: string; slug: string }>("UPDATE sandboxes SET status = 'published', published_at = now(), updated_at = now() WHERE project_id = $1 RETURNING id, slug", [projectId]);

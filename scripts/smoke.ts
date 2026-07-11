@@ -41,7 +41,15 @@ async function main() {
     try { await executeCapability({ sandboxSlug: `smoke-${suffix}`, token: "invalid", operationId: "create_widget", body: {}, idempotencyKey: "invalid" }); }
     catch (error) { unauthorized = error instanceof ExecutionError && error.status === 401; }
     if (!unauthorized) throw new Error("Invalid credential was not rejected");
-    process.stdout.write("End-to-end smoke test passed: register → delegate → credential → invoke → receipt → replay protection\n");
+
+    await query(`INSERT INTO capabilities (project_id,operation_id,method,path,summary,input_schema,output_schema,policy,scope) VALUES ($1,'read_echo','GET','/anything','Read staging echo','{}'::jsonb,'{}'::jsonb,'read_only','echo:read')`, [projects[0].id]);
+    await query("INSERT INTO vendor_connections (project_id,origin,auth_type,status,last_tested_at) VALUES ($1,'https://httpbin.org','none','active',now())", [projects[0].id]);
+    const upstreamAgent = await registerSandboxAgent(`smoke-${suffix}`, "Upstream CI agent", ["read_echo"], `upstream-${suffix}`);
+    const upstream = await executeCapability({ sandboxSlug: `smoke-${suffix}`, token: upstreamAgent.credential, operationId: "read_echo", body: { query: { probe: "agent-access" } }, idempotencyKey: `upstream-${suffix}` });
+    if (upstream.status_code !== 200 || upstream.environment !== "staging-shadow" || !upstream.result) throw new Error("Read-only upstream forwarding failed");
+    const upstreamStored = await query<{ payload: { response?: { body_hash?: string; byte_size?: number } } }>("SELECT payload FROM receipts WHERE payload->>'receipt_id'=$1", [upstream.receipt_id]);
+    if (!upstreamStored[0].payload.response?.body_hash || !upstreamStored[0].payload.response?.byte_size) throw new Error("Upstream receipt did not retain redacted evidence");
+    process.stdout.write("End-to-end smoke test passed: import foundation → register → delegate → invoke → upstream shadow read → redacted receipt → replay protection\n");
   } finally {
     await query("DELETE FROM organizations WHERE id=$1", [organizations[0].id]);
   }

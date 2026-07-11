@@ -20,6 +20,24 @@ export type CapabilityDraft = {
   scope: string;
 };
 
+function resolveLocalSchema(value: unknown, document: Record<string, unknown>, seen = new Set<string>()): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  if (typeof record.$ref === "string" && record.$ref.startsWith("#/")) {
+    if (seen.has(record.$ref)) return { $ref: record.$ref };
+    let target: unknown = document;
+    for (const part of record.$ref.slice(2).split("/").map((item) => item.replaceAll("~1", "/").replaceAll("~0", "~"))) {
+      if (!target || typeof target !== "object") return { $ref: record.$ref };
+      target = (target as Record<string, unknown>)[part];
+    }
+    return resolveLocalSchema(target, document, new Set([...seen, record.$ref]));
+  }
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => {
+    if (Array.isArray(item)) return [key, item.map((entry) => entry && typeof entry === "object" ? resolveLocalSchema(entry, document, seen) : entry)];
+    return [key, item && typeof item === "object" ? resolveLocalSchema(item, document, seen) : item];
+  }));
+}
+
 function defaultPolicy(method: string): CapabilityDraft["policy"] {
   if (method === "get" || method === "head") return "read_only";
   if (method === "delete") return "prohibited";
@@ -49,8 +67,8 @@ export function parseOpenApi(source: string) {
         method: method.toUpperCase(),
         path,
         summary: typeof operation.summary === "string" ? operation.summary : operationId.replaceAll("_", " "),
-        inputSchema: content?.["application/json"]?.schema ?? {},
-        outputSchema: responseContent?.["application/json"]?.schema ?? {},
+        inputSchema: resolveLocalSchema(content?.["application/json"]?.schema ?? {}, document as Record<string, unknown>),
+        outputSchema: resolveLocalSchema(responseContent?.["application/json"]?.schema ?? {}, document as Record<string, unknown>),
         policy: defaultPolicy(method.toLowerCase()),
         scope: `${slugify(path.split("/").filter(Boolean)[0] ?? "resource")}:${method === "get" ? "read" : "write"}`,
       });
