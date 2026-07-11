@@ -22,14 +22,21 @@ export async function getCurrentOrganization(): Promise<Organization> {
   );
   if (existing[0]) return existing[0];
 
-  const slug = slugify(`workspace-${userId.slice(-10)}`);
-  const created = await query<{ id: string; name: string; slug: string }>(
+  const slug = slugify(`workspace-${userId}`);
+  const inserted = await query<{ id: string; name: string; slug: string }>(
     `INSERT INTO organizations (owner_clerk_id, name, slug)
      VALUES ($1, 'My agent workspace', $2)
-     ON CONFLICT (owner_clerk_id) DO UPDATE SET updated_at = now()
+     ON CONFLICT DO NOTHING
      RETURNING id, name, slug`,
     [userId, slug],
   );
+  const created = inserted[0]
+    ? inserted
+    : await query<{ id: string; name: string; slug: string }>(
+        `SELECT id, name, slug FROM organizations WHERE owner_clerk_id = $1 LIMIT 1`,
+        [userId],
+      );
+  if (!created[0]) throw new Error("Unable to create workspace");
   await query(
     `INSERT INTO memberships (organization_id, clerk_user_id, role)
      VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`,
