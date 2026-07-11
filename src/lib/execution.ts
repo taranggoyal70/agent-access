@@ -110,10 +110,11 @@ export async function executeCapability(options: {
     status_code: statusCode,
     duration_ms: durationMs,
   };
-  const signed = signReceipt(payload);
+  const receiptPayload = JSON.parse(JSON.stringify(payload)) as typeof payload;
+  const signed = signReceipt(receiptPayload);
   await query(
     "INSERT INTO receipts (execution_id, payload, signature, signature_hash) VALUES ($1, $2::jsonb, $3, $4)",
-    [executions[0].id, JSON.stringify(payload), signed.signature, signed.signatureHash],
+    [executions[0].id, JSON.stringify(receiptPayload), signed.signature, signed.signatureHash],
   );
   await query("UPDATE credentials SET last_used_at = now() WHERE id = $1", [context.credential_id]);
   await query(
@@ -121,7 +122,7 @@ export async function executeCapability(options: {
      VALUES ($1,'agent',$2,'capability.executed','execution',$3,$4::jsonb)`,
     [context.organization_id, context.agent_account_id, executions[0].id, JSON.stringify({ capability: context.operation_id, status_code: statusCode, receipt_id: receiptId })],
   );
-  return { ...payload, signature: signed.signature, verified: verifyReceipt(payload, signed.signature), response: responseBody };
+  return { ...receiptPayload, signature: signed.signature, verified: verifyReceipt(receiptPayload, signed.signature), response: responseBody };
 }
 
 export class ExecutionError extends Error {
