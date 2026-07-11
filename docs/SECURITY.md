@@ -12,7 +12,10 @@
 - Prohibited operations are never published or executable.
 - Signed receipt verification uses canonical JSON, HMAC-SHA256, and constant-time comparison.
 - Security-relevant imports, policy updates, publication, registrations, and executions write audit events.
+- OpenAPI revisions never expand a published surface or an existing Delegation without explicit review and promotion.
 - Public receipt verification exposes the receipt evidence, not a bearer credential.
+- Vendor Connection receipts retain normalized metadata, hashes, and allowlisted evidence fields rather than complete upstream payloads by default.
+- Optional encrypted debugging payloads expire after 24 hours and never include authorization headers.
 
 ## Threats outside this MVP
 

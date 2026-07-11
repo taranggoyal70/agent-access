@@ -10,12 +10,13 @@ Human identity products assume a person can open a browser, complete a form, and
 
 ## Working product flow
 
-1. Sign in with Clerk and import an OpenAPI JSON or YAML document.
-2. Review generated capabilities and choose `read_only`, `reversible`, `approval_required`, or `prohibited`.
-3. Publish a Neon-backed sandbox with discovery, REST, and MCP endpoints.
-4. Register a test agent and receive a one-time, one-hour delegated credential.
-5. Invoke a real sandbox capability with an idempotency key.
-6. Inspect the signed execution receipt and audit trail.
+1. Import an OpenAPI contract by HTTPS URL, file, or pasted JSON/YAML.
+2. Review a server-side preflight covering references, authentication, origin safety, operation risk, and revision changes.
+3. Connect a staging API with an encrypted bearer token or API-key credential.
+4. Review generated capabilities and publish only read operations in Shadow Mode.
+5. Register an external agent and receive a one-time, one-hour delegated credential.
+6. Invoke the real staging API through REST or MCP with an idempotency key.
+7. Inspect a signed receipt containing redacted metadata and request/response hashes.
 
 No product data is stored in browser local storage. Application records live in Postgres. Credential secrets are stored only as SHA-256 hashes, and receipt signatures use a server-side HMAC secret.
 
@@ -61,6 +62,7 @@ npm run smoke
 - [YC brief](docs/YC_BRIEF.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security model](docs/SECURITY.md)
+- [YC readiness scorecard](docs/YC_READINESS.md)
 - [Domain glossary](CONTEXT.md)
 
 ## Current boundary
