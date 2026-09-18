@@ -60,6 +60,15 @@ npm run smoke
 
 `check` runs lint, unit tests, TypeScript, and a production build. `smoke` creates an isolated temporary tenant in Neon and verifies the real register → delegate → credential → invoke → signed receipt → idempotent replay path, then removes the fixture.
 
+`agent-smoke` proves the agent runtime the same way, against a real database, a real model, and the real HTTP surface. It needs a running server, because the agent is an outside client:
+
+```bash
+npm run dev
+AGENT_ACCESS_ORIGIN=http://localhost:3000 npm run agent-smoke
+```
+
+It asserts two things: a read-only goal completes with at least one delegated invocation whose receipt verifies, and a goal that can only be met by an `approval_required` capability halts with zero invocations.
+
 ## Machine endpoints
 
 - `GET /.well-known/agent-access/{sandbox-slug}`

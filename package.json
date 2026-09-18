@@ -10,7 +10,8 @@
     "test": "vitest run",
     "db:migrate": "dotenv -e .env.local -- tsx scripts/migrate.ts",
     "smoke": "dotenv -e .env.local -- tsx scripts/smoke.ts",
-    "check": "npm run lint && npm run test && npm run build"
+    "check": "npm run lint && npm run test && npm run build",
+    "agent-smoke": "dotenv -e .env.local -- tsx scripts/agent-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
