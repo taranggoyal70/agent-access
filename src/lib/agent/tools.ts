@@ -1,4 +1,4 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import type { AgentToolDefinition } from "./provider";
 
 export type CapabilityPolicy = "read_only" | "reversible" | "approval_required" | "prohibited";
 
@@ -30,7 +30,7 @@ export type AdmittedTool = {
 };
 
 export type Toolset = {
-  tools: Anthropic.Tool[];
+  tools: AgentToolDefinition[];
   byToolName: Map<string, AdmittedTool>;
   withheld: { operation_id: string; policy: CapabilityPolicy; reason: string }[];
 };
@@ -60,7 +60,7 @@ function withheldReason(capability: PublishedCapability, allowWrites: boolean) {
 }
 
 /**
- * Anthropic tool names are constrained to `[a-zA-Z0-9_-]{1,64}`, but an
+ * Tool names are constrained to `[a-zA-Z0-9_-]{1,64}` across model APIs, but an
  * operationId comes from a vendor's OpenAPI document and can be anything.
  * Collisions are resolved by suffix so two distinct capabilities can never
  * share one tool name and be confused for each other at invocation time.
@@ -76,12 +76,12 @@ export function toolNameFor(operationId: string, taken: Set<string> = new Set())
 }
 
 /**
- * An empty OpenAPI request body is a legitimate shape for a GET, but the
- * Messages API requires an object schema, so normalise rather than pass `{}`.
+ * An empty OpenAPI request body is a legitimate shape for a GET, but every
+ * model API requires an object schema, so normalise rather than pass `{}`.
  */
-function inputSchemaFor(capability: PublishedCapability): Anthropic.Tool["input_schema"] {
+function inputSchemaFor(capability: PublishedCapability): Record<string, unknown> {
   const schema = capability.input_schema ?? {};
-  if (schema.type === "object" && schema.properties) return schema as Anthropic.Tool["input_schema"];
+  if (schema.type === "object" && schema.properties) return schema;
   return { type: "object", properties: {}, additionalProperties: false };
 }
 
@@ -99,7 +99,7 @@ function describe(capability: PublishedCapability, admission: Exclude<Admission,
 }
 
 export function buildToolset(capabilities: PublishedCapability[], options: { allowWrites: boolean }): Toolset {
-  const tools: Anthropic.Tool[] = [];
+  const tools: AgentToolDefinition[] = [];
   const byToolName = new Map<string, AdmittedTool>();
   const withheld: Toolset["withheld"] = [];
   const taken = new Set<string>();
@@ -120,7 +120,7 @@ export function buildToolset(capabilities: PublishedCapability[], options: { all
     tools.push({
       name: toolName,
       description: describe(capability, admission),
-      input_schema: inputSchemaFor(capability),
+      inputSchema: inputSchemaFor(capability),
     });
   }
 

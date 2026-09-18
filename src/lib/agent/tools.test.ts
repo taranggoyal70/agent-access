@@ -62,7 +62,7 @@ describe("toolNameFor", () => {
 describe("buildToolset", () => {
   it("normalises an empty request body to an object schema", () => {
     const { tools } = buildToolset([capability()], { allowWrites: false });
-    expect(tools[0].input_schema).toEqual({ type: "object", properties: {}, additionalProperties: false });
+    expect(tools[0].inputSchema).toEqual({ type: "object", properties: {}, additionalProperties: false });
   });
 
   it("preserves a real request body schema", () => {
@@ -71,7 +71,7 @@ describe("buildToolset", () => {
       [capability({ policy: "reversible", input_schema: schema })],
       { allowWrites: true },
     );
-    expect(tools[0].input_schema).toEqual(schema);
+    expect(tools[0].inputSchema).toEqual(schema);
   });
 
   it("reports why each capability was withheld", () => {
