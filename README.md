@@ -17,12 +17,24 @@ Human identity products assume a person can open a browser, complete a form, and
 5. Register an external agent and receive a one-time, one-hour delegated credential.
 6. Invoke the real staging API through REST or MCP with an idempotency key.
 7. Inspect a signed receipt containing redacted metadata and request/response hashes.
+8. Run the built-in agent against the sandbox and watch it discover capabilities, invoke them under a delegated credential, and leave a receipt for every call.
 
 No product data is stored in browser local storage. Application records live in Postgres. Credential secrets are stored only as SHA-256 hashes, and receipt signatures use a server-side HMAC secret.
+
+## Agent runtime
+
+Agent Access runs its own agent against its own published surface.
+
+The runtime holds no database handle and no vendor credential. It registers an Agent Account for the run, receives a one-hour delegated credential, and calls `/api/agent/v1/{slug}/...` over HTTPS exactly as an outside agent would, so a completed run is evidence that the published contract works rather than evidence that an internal path works.
+
+Capability admission fails closed. `read_only` is invocable, `reversible` only when the run allows writes, `prohibited` never, and an unrecognised policy is withheld rather than admitted. `approval_required` capabilities are declared to the model but gated: reaching for one halts the run and the call never leaves the runtime.
+
+Every run is bounded by steps, invocations, and wall-clock time, and records a named halt reason. Start one at `/dashboard/runs`, or `POST /api/agent-runs` with a `sandbox_slug` and a `goal`.
 
 ## Stack
 
 - Next.js 16 App Router and TypeScript
+- Claude (`claude-opus-5`) via the Anthropic SDK for the agent runtime
 - Clerk authentication
 - Neon Postgres
 - Vercel deployment
@@ -68,3 +80,7 @@ npm run smoke
 ## Current boundary
 
 This release is a production-quality sandbox MVP, not a general-purpose reverse proxy. It emulates a vendor's resources inside an isolated database-backed sandbox. A future production connector will forward approved operations to the vendor's API using their existing tenant and authorization systems.
+
+The agent runtime makes the product demonstrable end to end without a second party. It does not make Agent Access used: it has no design partners and no external agent traffic. `docs/YC_READINESS.md` holds the current scoreboard.
+
+Approval workflow is deferred. A gated run halts and records what was requested; granting that approval and resuming the run is not yet built. Runs execute inside the request that starts them, so queueing and resumption are deferred too.
