@@ -82,6 +82,28 @@ _Avoid_: Agent Credential, Delegation, unrestricted proxy, shared customer secre
 The rule attached to a Capability that classifies its effect and determines whether it is allowed, denied, limited, or requires Principal approval.
 _Avoid_: Prompt instruction, UI warning, generic role
 
+## Agent runtime
+
+**Agent Runtime**:
+The first-party agent Agent Access runs against its own published surface, holding no database handle and no Vendor Connection credential. It authenticates with a delegated credential it registers for itself, exactly as an outside Agent Customer would.
+_Avoid_: Internal service, privileged worker, background job, the vendor's own agent
+
+**Agent Run**:
+One goal pursued by the Agent Runtime to a stop, together with the bounds it ran under, every Capability it invoked, and the Execution Receipt each invocation produced.
+_Avoid_: Execution, chat session, test fixture, demo script
+
+**Capability Admission**:
+The per-run decision about whether the Agent Runtime may invoke a Capability on its own authority. Admission fails closed: an unrecognised Capability Policy is withheld rather than admitted.
+_Avoid_: Capability Policy, Delegation, feature flag
+
+**Gated Capability**:
+A Capability declared to the model but not invocable by it, because its Capability Policy requires human approval. Reaching for one halts the Agent Run and the call never leaves the runtime.
+_Avoid_: Prohibited Capability, disabled Capability, hidden tool
+
+**Halt Reason**:
+The named cause of an Agent Run ending short of an answer: a step, invocation, or time bound, a required approval, an upstream error, or a model error.
+_Avoid_: Stack trace, error message, timeout
+
 ## Example dialogue
 
 **Agent Customer:** “Can I create a production workspace for this Principal?”
@@ -91,6 +113,14 @@ _Avoid_: Prompt instruction, UI warning, generic role
 **Principal:** “Allow this Agent Customer to create projects for seven days, but not delete or invite users.”
 
 **SaaS Vendor:** “The Delegation is active. Every Capability invocation will produce an Execution Receipt.”
+
+**Champion:** “Can I see an agent actually use this before I connect our staging API?”
+
+**SaaS Vendor:** “Start an Agent Run against the published Agent Sandbox. The Agent Runtime registers its own Agent Account, reads the Capabilities you published, and works the goal. You will get a signed Execution Receipt for every call it makes.”
+
+**Champion:** “What happens if it tries to invite a user?”
+
+**SaaS Vendor:** “That Capability is a Gated Capability. The run halts with the Halt Reason `approval_required` and records what it wanted to do. The agent cannot approve itself.”
 
 **Champion:** “I imported our OpenAPI file. Can agents call every endpoint now?”
 
