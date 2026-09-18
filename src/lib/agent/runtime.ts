@@ -1,9 +1,6 @@
-import type Anthropic from "@anthropic-ai/sdk";
-
+import type { AgentToolResult, ModelProvider } from "./provider";
 import { AgentSurfaceClient, SurfaceError, idempotencyKeyFor, type InvocationReceipt } from "./surface-client";
 import { buildToolset, type PublishedCapability } from "./tools";
-
-export const AGENT_MODEL = "claude-opus-5";
 
 export type HaltReason =
   | "step_limit"
@@ -42,11 +39,6 @@ export type RunBounds = {
 
 export const DEFAULT_BOUNDS: RunBounds = { maxSteps: 8, maxInvocations: 12, deadlineMs: 120_000 };
 
-/** The slice of the Anthropic client the loop uses, so tests can stub a model. */
-export type MessagesClient = {
-  messages: { create(params: Anthropic.MessageCreateParamsNonStreaming): Promise<Anthropic.Message> };
-};
-
 const SYSTEM_PROMPT = `You are an external AI agent operating against a SaaS vendor through Agent Access.
 
 Every tool you can see is a capability the vendor reviewed and published for external agents. You hold a short-lived delegated credential scoped to exactly these capabilities and nothing else. Each call you make produces a signed execution receipt that a human will read.
@@ -59,14 +51,6 @@ How to work:
 
 Be concise. The reader wants the finding, not a narration of your process.`;
 
-function textFrom(content: Anthropic.ContentBlock[]) {
-  return content
-    .filter((block): block is Anthropic.TextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
-}
-
 function resultPreview(receipt: InvocationReceipt) {
   const payload = receipt.result ?? receipt.response ?? {};
   const serialized = JSON.stringify(payload);
@@ -78,13 +62,14 @@ function resultPreview(receipt: InvocationReceipt) {
 /**
  * Runs one goal to a stop, and returns what happened.
  *
- * Nothing here writes to the database: the caller persists the outcome. That
- * keeps the loop testable against a stubbed surface and a stubbed model, which
- * is the only way the bound and halt behaviour can be asserted rather than
- * asserted-in-a-comment.
+ * Nothing here writes to the database and nothing here knows which model
+ * vendor is answering: the caller persists the outcome, and the provider owns
+ * its own conversation format. That keeps the loop testable against a stubbed
+ * surface and a stubbed model, which is the only way the bound and gate
+ * behaviour can be asserted rather than asserted-in-a-comment.
  */
 export async function runAgent(options: {
-  anthropic: MessagesClient;
+  provider: ModelProvider;
   surface: AgentSurfaceClient;
   runId: string;
   goal: string;
@@ -121,6 +106,8 @@ export async function runAgent(options: {
     kind: "plan",
     detail: {
       phase: "toolset",
+      provider: options.provider.id,
+      model: options.provider.model,
       admitted: [...toolset.byToolName.values()].map((entry) => ({ operation_id: entry.capability.operation_id, admission: entry.admission })),
       withheld: toolset.withheld,
     },
@@ -137,7 +124,8 @@ export async function runAgent(options: {
   );
   agentAccountId = registration.agent_account_id;
 
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: options.goal }];
+  const session = options.provider.start({ system: SYSTEM_PROMPT, tools: toolset.tools });
+  let pending: { goal: string } | { results: AgentToolResult[] } = { goal: options.goal };
 
   for (let step = 0; step < bounds.maxSteps; step += 1) {
     if (now() - startedAt > bounds.deadlineMs) {
@@ -145,52 +133,38 @@ export async function runAgent(options: {
       return finish("halted", null, "time_limit");
     }
 
-    let response: Anthropic.Message;
+    let turn;
     try {
-      response = await options.anthropic.messages.create({
-        model: AGENT_MODEL,
-        max_tokens: 16000,
-        system: SYSTEM_PROMPT,
-        thinking: { type: "adaptive" },
-        tools: toolset.tools,
-        messages,
-      });
+      turn = await session.next(pending);
     } catch (error) {
       record({ kind: "halt", detail: { reason: error instanceof Error ? error.message : "model request failed" } });
       return finish("failed", null, "model_error");
     }
 
-    usage.inputTokens += response.usage.input_tokens;
-    usage.outputTokens += response.usage.output_tokens;
+    usage.inputTokens += turn.usage.inputTokens;
+    usage.outputTokens += turn.usage.outputTokens;
 
-    // Guard before reading content: a refused turn carries no usable answer.
-    if (response.stop_reason === "refusal") {
+    if (turn.stop === "refusal") {
       record({
         kind: "refusal",
-        detail: { category: response.stop_details?.category ?? null, explanation: response.stop_details?.explanation ?? null },
+        detail: { category: turn.refusal?.category ?? null, explanation: turn.refusal?.explanation ?? null },
       });
       return finish("failed", null, "model_error");
     }
 
-    const assistantText = textFrom(response.content);
-    // Append the whole content array, not just the text: thinking blocks must
-    // be echoed back unchanged on the next turn of the same model.
-    messages.push({ role: "assistant", content: response.content });
-
-    if (response.stop_reason !== "tool_use") {
-      record({ kind: "plan", detail: { phase: "answer", stop_reason: response.stop_reason, text: assistantText } });
-      return finish("completed", assistantText || null);
+    if (turn.stop === "answer") {
+      record({ kind: "plan", detail: { phase: "answer", text: turn.text } });
+      return finish("completed", turn.text || null);
     }
 
-    const toolUses = response.content.filter((block): block is Anthropic.ToolUseBlock => block.type === "tool_use");
-    record({ kind: "plan", detail: { phase: "tool_use", text: assistantText, calls: toolUses.map((call) => call.name) } });
+    record({ kind: "plan", detail: { phase: "tool_use", text: turn.text, calls: turn.toolCalls.map((call) => call.name) } });
 
-    const results: Anthropic.ToolResultBlockParam[] = [];
+    const results: AgentToolResult[] = [];
 
-    for (const call of toolUses) {
+    for (const call of turn.toolCalls) {
       const admitted = toolset.byToolName.get(call.name);
       if (!admitted) {
-        results.push({ type: "tool_result", tool_use_id: call.id, is_error: true, content: `Unknown tool '${call.name}'.` });
+        results.push({ toolCallId: call.id, isError: true, content: `Unknown tool '${call.name}'.` });
         continue;
       }
 
@@ -201,12 +175,12 @@ export async function runAgent(options: {
           policy: admitted.capability.policy,
           detail: { reason: "capability requires human approval", requested_input: call.input },
         });
-        return finish("halted", assistantText || null, "approval_required");
+        return finish("halted", turn.text || null, "approval_required");
       }
 
       if (invocationCount >= bounds.maxInvocations) {
         record({ kind: "halt", detail: { reason: "invocation budget exhausted", max_invocations: bounds.maxInvocations } });
-        return finish("halted", assistantText || null, "invocation_limit");
+        return finish("halted", turn.text || null, "invocation_limit");
       }
 
       const idempotencyKey = idempotencyKeyFor(options.runId, call.id);
@@ -216,7 +190,7 @@ export async function runAgent(options: {
         const receipt = await options.surface.invoke({
           operationId: admitted.capability.operation_id,
           credential: registration.credential,
-          body: (call.input ?? {}) as Record<string, unknown>,
+          body: call.input,
           idempotencyKey,
         });
         record({
@@ -229,9 +203,8 @@ export async function runAgent(options: {
           detail: { replayed: receipt.replayed ?? false, signature: receipt.signature },
         });
         results.push({
-          type: "tool_result",
-          tool_use_id: call.id,
-          is_error: receipt.status_code >= 400,
+          toolCallId: call.id,
+          isError: receipt.status_code >= 400,
           content: resultPreview(receipt),
         });
       } catch (error) {
@@ -248,13 +221,11 @@ export async function runAgent(options: {
         // Hand the denial back as a tool error rather than ending the run: the
         // model can often reach the goal another way, and if it cannot, it
         // says so, which is a more useful outcome than a stack trace.
-        results.push({ type: "tool_result", tool_use_id: call.id, is_error: true, content: `${status}: ${message}` });
+        results.push({ toolCallId: call.id, isError: true, content: `${status}: ${message}` });
       }
     }
 
-    // One user message carrying every result. Splitting them teaches the model
-    // to stop issuing parallel calls.
-    messages.push({ role: "user", content: results });
+    pending = { results };
   }
 
   record({ kind: "halt", detail: { reason: "step budget exhausted", max_steps: bounds.maxSteps } });

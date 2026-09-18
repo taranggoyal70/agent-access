@@ -1,5 +1,5 @@
 import { query } from "../db";
-import { AGENT_MODEL, type RunBounds, type RunOutcome, type RunStep } from "./runtime";
+import type { RunBounds, RunOutcome, RunStep } from "./runtime";
 
 export type AgentRunRecord = {
   id: string;
@@ -37,6 +37,7 @@ export async function createRun(options: {
   organizationId: string;
   sandboxId: string;
   goal: string;
+  model: string;
   allowWrites: boolean;
   bounds: RunBounds;
 }) {
@@ -47,7 +48,7 @@ export async function createRun(options: {
       options.organizationId,
       options.sandboxId,
       options.goal,
-      AGENT_MODEL,
+      options.model,
       options.allowWrites,
       options.bounds.maxSteps,
       options.bounds.maxInvocations,

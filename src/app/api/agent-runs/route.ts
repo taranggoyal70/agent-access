@@ -1,8 +1,9 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 
 import { getCurrentOrganization } from "@/lib/auth";
 import { completeRun, createRun, failRun, resolveOwnedSandbox } from "@/lib/agent/run-store";
+import { describeProvider } from "@/lib/agent/provider";
+import { resolveProvider } from "@/lib/agent/providers";
 import { DEFAULT_BOUNDS, runAgent } from "@/lib/agent/runtime";
 import { AgentSurfaceClient } from "@/lib/agent/surface-client";
 
@@ -25,8 +26,8 @@ export async function POST(request: Request) {
     const organization = await getCurrentOrganization();
     const input = requestSchema.parse(await request.json());
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
+    // Throws with the exact missing variable named, before a run row exists.
+    const provider = resolveProvider();
 
     const sandbox = await resolveOwnedSandbox(organization.id, input.sandbox_slug);
     if (!sandbox) throw new Error("Sandbox not found in this workspace");
@@ -42,6 +43,7 @@ export async function POST(request: Request) {
       organizationId: organization.id,
       sandboxId: sandbox.id,
       goal: input.goal,
+      model: describeProvider(provider),
       allowWrites: input.allow_writes ?? false,
       bounds,
     });
@@ -51,7 +53,7 @@ export async function POST(request: Request) {
     const origin = process.env.AGENT_ACCESS_ORIGIN ?? new URL(request.url).origin;
 
     const outcome = await runAgent({
-      anthropic: new Anthropic({ apiKey }),
+      provider,
       surface: new AgentSurfaceClient(origin, sandbox.slug),
       runId,
       goal: input.goal,
@@ -63,6 +65,7 @@ export async function POST(request: Request) {
 
     return Response.json({
       run_id: runId,
+      model: describeProvider(provider),
       status: outcome.status,
       halt_reason: outcome.haltReason ?? null,
       final_text: outcome.finalText,

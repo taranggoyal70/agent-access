@@ -1,7 +1,7 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 
-import { runAgent, type MessagesClient } from "./runtime";
+import { runAgent } from "./runtime";
+import type { AgentToolDefinition, AgentToolResult, AgentTurn, ModelProvider } from "./provider";
 import { AgentSurfaceClient } from "./surface-client";
 import type { PublishedCapability } from "./tools";
 
@@ -16,9 +16,7 @@ function surface(options: { invoke?: (operationId: string) => { status: number; 
   const invocations: { operationId: string; idempotencyKey: string }[] = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith("/capabilities")) {
-      return Response.json({ capabilities: CAPABILITIES });
-    }
+    if (url.endsWith("/capabilities")) return Response.json({ capabilities: CAPABILITIES });
     if (url.endsWith("/accounts")) {
       return Response.json({ agent_account_id: "aa_1", delegation_id: "dl_1", capabilities: [], credential: "aa_sbx_x", expires_at: "2026-01-01" }, { status: 201 });
     }
@@ -34,43 +32,35 @@ function surface(options: { invoke?: (operationId: string) => { status: number; 
   return { client: new AgentSurfaceClient("https://example.test", "acme", impl), invocations };
 }
 
-function message(content: Anthropic.ContentBlock[], stopReason: Anthropic.Message["stop_reason"]): Anthropic.Message {
-  return {
-    id: "msg_1",
-    type: "message",
-    role: "assistant",
-    model: "claude-opus-5",
-    content,
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 5 },
-  } as Anthropic.Message;
-}
+const answer = (text: string): AgentTurn => ({ stop: "answer", text, toolCalls: [], usage: { inputTokens: 10, outputTokens: 5 } });
+const callTool = (id: string, name: string, input: Record<string, unknown> = {}): AgentTurn => ({
+  stop: "tool_use",
+  text: "",
+  toolCalls: [{ id, name, input }],
+  usage: { inputTokens: 10, outputTokens: 5 },
+});
 
-const text = (value: string) => ({ type: "text", text: value, citations: null }) as Anthropic.ContentBlock;
-const toolUse = (id: string, name: string, input: Record<string, unknown> = {}) =>
-  ({ type: "tool_use", id, name, input }) as Anthropic.ContentBlock;
-
-/** Replays a script of model turns and captures what the loop sent. */
-function model(script: Anthropic.Message[]): MessagesClient & { sent: Anthropic.MessageCreateParamsNonStreaming[] } {
-  const sent: Anthropic.MessageCreateParamsNonStreaming[] = [];
+/** Replays a script of turns and records the tools it was offered and the results it was fed. */
+function stubProvider(script: AgentTurn[]) {
+  const offered: AgentToolDefinition[][] = [];
+  const fed: AgentToolResult[][] = [];
   let turn = 0;
-  return {
-    sent,
-    messages: {
-      async create(params) {
-        sent.push(structuredClone(params));
-        const next = script[Math.min(turn, script.length - 1)];
-        turn += 1;
-        return next;
-      },
+  const provider: ModelProvider = {
+    id: "stub",
+    model: "stub-1",
+    start({ tools }) {
+      offered.push(tools);
+      return {
+        async next(input) {
+          if ("results" in input) fed.push(input.results);
+          const next = script[Math.min(turn, script.length - 1)];
+          turn += 1;
+          return next;
+        },
+      };
     },
   };
-}
-
-/** `tools` is a union that also covers nameless server toolsets, so narrow before reading. */
-function toolNames(params: Anthropic.MessageCreateParamsNonStreaming) {
-  return (params.tools ?? []).flatMap((tool) => ("name" in tool ? [tool.name] : []));
+  return { provider, offered, fed };
 }
 
 const base = { runId: "run_1", goal: "How many projects are there?", allowWrites: false };
@@ -78,7 +68,8 @@ const base = { runId: "run_1", goal: "How many projects are there?", allowWrites
 describe("runAgent", () => {
   it("completes when the model answers without reaching for a tool", async () => {
     const { client } = surface();
-    const outcome = await runAgent({ anthropic: model([message([text("There are 3.")], "end_turn")]), surface: client, ...base });
+    const { provider } = stubProvider([answer("There are 3.")]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
 
     expect(outcome.status).toBe("completed");
     expect(outcome.finalText).toBe("There are 3.");
@@ -87,29 +78,30 @@ describe("runAgent", () => {
 
   it("invokes a capability and records the receipt on the step", async () => {
     const { client, invocations } = surface();
-    const outcome = await runAgent({
-      anthropic: model([
-        message([toolUse("toolu_1", "list_projects")], "tool_use"),
-        message([text("There is 1 project.")], "end_turn"),
-      ]),
-      surface: client,
-      ...base,
-    });
+    const { provider } = stubProvider([callTool("t1", "list_projects"), answer("There is 1 project.")]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
 
     expect(outcome.status).toBe("completed");
-    expect(invocations).toEqual([{ operationId: "list_projects", idempotencyKey: "run_1:toolu_1" }]);
-    const invocation = outcome.steps.find((step) => step.kind === "invocation");
-    expect(invocation).toMatchObject({ operationId: "list_projects", receiptId: "rcp_1", statusCode: 200 });
+    expect(invocations).toEqual([{ operationId: "list_projects", idempotencyKey: "run_1:t1" }]);
+    expect(outcome.steps.find((step) => step.kind === "invocation")).toMatchObject({
+      operationId: "list_projects",
+      receiptId: "rcp_1",
+      statusCode: 200,
+    });
+  });
+
+  it("records which provider and model produced the run", async () => {
+    const { client } = surface();
+    const { provider } = stubProvider([answer("ok")]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
+
+    expect(outcome.steps[0].detail).toMatchObject({ provider: "stub", model: "stub-1" });
   });
 
   it("halts without invoking when the model reaches for a gated capability", async () => {
     const { client, invocations } = surface();
-    const outcome = await runAgent({
-      anthropic: model([message([toolUse("toolu_1", "invite_member", { email: "x@y.z" })], "tool_use")]),
-      surface: client,
-      ...base,
-      allowWrites: true,
-    });
+    const { provider } = stubProvider([callTool("t1", "invite_member", { email: "x@y.z" })]);
+    const outcome = await runAgent({ provider, surface: client, ...base, allowWrites: true });
 
     expect(outcome.status).toBe("halted");
     expect(outcome.haltReason).toBe("approval_required");
@@ -120,12 +112,8 @@ describe("runAgent", () => {
 
   it("stops at the step budget", async () => {
     const { client } = surface();
-    const outcome = await runAgent({
-      anthropic: model([message([toolUse("toolu_1", "list_projects")], "tool_use")]),
-      surface: client,
-      ...base,
-      bounds: { maxSteps: 3 },
-    });
+    const { provider } = stubProvider([callTool("t1", "list_projects")]);
+    const outcome = await runAgent({ provider, surface: client, ...base, bounds: { maxSteps: 3 } });
 
     expect(outcome.haltReason).toBe("step_limit");
     expect(outcome.steps.filter((step) => step.kind === "invocation")).toHaveLength(3);
@@ -133,12 +121,8 @@ describe("runAgent", () => {
 
   it("stops at the invocation budget even with steps left", async () => {
     const { client, invocations } = surface();
-    const outcome = await runAgent({
-      anthropic: model([message([toolUse("toolu_1", "list_projects")], "tool_use")]),
-      surface: client,
-      ...base,
-      bounds: { maxSteps: 10, maxInvocations: 2 },
-    });
+    const { provider } = stubProvider([callTool("t1", "list_projects")]);
+    const outcome = await runAgent({ provider, surface: client, ...base, bounds: { maxSteps: 10, maxInvocations: 2 } });
 
     expect(outcome.haltReason).toBe("invocation_limit");
     expect(invocations).toHaveLength(2);
@@ -146,23 +130,19 @@ describe("runAgent", () => {
 
   it("stops at the wall-clock deadline", async () => {
     const { client } = surface();
+    const { provider } = stubProvider([callTool("t1", "list_projects")]);
     let clock = 0;
-    const outcome = await runAgent({
-      anthropic: model([message([toolUse("toolu_1", "list_projects")], "tool_use")]),
-      surface: client,
-      ...base,
-      bounds: { deadlineMs: 5_000 },
-      now: () => (clock += 4_000),
-    });
+    const outcome = await runAgent({ provider, surface: client, ...base, bounds: { deadlineMs: 5_000 }, now: () => (clock += 4_000) });
 
     expect(outcome.haltReason).toBe("time_limit");
   });
 
   it("records a refusal instead of reading the refused content", async () => {
     const { client } = surface();
-    const refused = message([], "refusal");
-    refused.stop_details = { type: "refusal", category: "cyber", explanation: "declined" } as Anthropic.Message["stop_details"];
-    const outcome = await runAgent({ anthropic: model([refused]), surface: client, ...base });
+    const { provider } = stubProvider([
+      { stop: "refusal", text: "", toolCalls: [], refusal: { category: "cyber", explanation: "declined" }, usage: { inputTokens: 1, outputTokens: 0 } },
+    ]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
 
     expect(outcome.status).toBe("failed");
     expect(outcome.steps.at(-1)).toMatchObject({ kind: "refusal", detail: { category: "cyber" } });
@@ -170,66 +150,35 @@ describe("runAgent", () => {
 
   it("hands a policy denial back to the model as a tool error and keeps going", async () => {
     const { client } = surface({ invoke: () => ({ status: 403, body: { error: "Capability is prohibited by policy" } }) });
-    const modelStub = model([
-      message([toolUse("toolu_1", "list_projects")], "tool_use"),
-      message([text("I could not read projects: the capability is denied by policy.")], "end_turn"),
-    ]);
-    const outcome = await runAgent({ anthropic: modelStub, surface: client, ...base });
+    const { provider, fed } = stubProvider([callTool("t1", "list_projects"), answer("I could not read projects.")]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
 
     expect(outcome.status).toBe("completed");
-    const denial = outcome.steps.find((step) => step.kind === "invocation");
-    expect(denial).toMatchObject({ statusCode: 403 });
-
-    const followUp = modelStub.sent[1].messages.at(-1);
-    expect(followUp?.role).toBe("user");
-    expect(JSON.stringify(followUp?.content)).toContain("prohibited by policy");
-  });
-
-  it("returns every parallel tool result in a single user message", async () => {
-    const { client } = surface();
-    const modelStub = model([
-      message([toolUse("toolu_1", "list_projects"), toolUse("toolu_2", "list_projects")], "tool_use"),
-      message([text("Done.")], "end_turn"),
-    ]);
-    await runAgent({ anthropic: modelStub, surface: client, ...base });
-
-    const followUp = modelStub.sent[1].messages.at(-1);
-    expect(followUp?.role).toBe("user");
-    expect(Array.isArray(followUp?.content) && followUp.content).toHaveLength(2);
+    expect(outcome.steps.find((step) => step.kind === "invocation")).toMatchObject({ statusCode: 403 });
+    expect(fed[0][0]).toMatchObject({ toolCallId: "t1", isError: true });
+    expect(fed[0][0].content).toContain("prohibited by policy");
   });
 
   it("withholds a reversible capability from a read-only run, and admits it when writes are allowed", async () => {
     const { client } = surface();
-    const readOnly = model([message([text("ok")], "end_turn")]);
-    await runAgent({ anthropic: readOnly, surface: client, ...base, allowWrites: false });
+    const readOnly = stubProvider([answer("ok")]);
+    await runAgent({ provider: readOnly.provider, surface: client, ...base, allowWrites: false });
     // create_project is absent; invite_member is present but gated, because the
     // model should be able to see the capability it is not allowed to trigger.
-    expect(toolNames(readOnly.sent[0])).toEqual(["list_projects", "invite_member"]);
+    expect(readOnly.offered[0].map((tool) => tool.name)).toEqual(["list_projects", "invite_member"]);
 
-    const writable = model([message([text("ok")], "end_turn")]);
-    await runAgent({ anthropic: writable, surface: client, ...base, allowWrites: true });
-    expect(toolNames(writable.sent[0])).toEqual(["list_projects", "create_project", "invite_member"]);
+    const writable = stubProvider([answer("ok")]);
+    await runAgent({ provider: writable.provider, surface: client, ...base, allowWrites: true });
+    expect(writable.offered[0].map((tool) => tool.name)).toEqual(["list_projects", "create_project", "invite_member"]);
   });
 
   it("records why each capability was withheld on the opening step", async () => {
     const { client } = surface();
-    const outcome = await runAgent({ anthropic: model([message([text("ok")], "end_turn")]), surface: client, ...base });
+    const { provider } = stubProvider([answer("ok")]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
 
     expect(outcome.steps[0].detail.withheld).toEqual([
       { operation_id: "create_project", policy: "reversible", reason: "run does not allow writes" },
     ]);
-  });
-
-  it("echoes the assistant content back so thinking blocks survive the next turn", async () => {
-    const { client } = surface();
-    const modelStub = model([
-      message([toolUse("toolu_1", "list_projects")], "tool_use"),
-      message([text("Done.")], "end_turn"),
-    ]);
-    await runAgent({ anthropic: modelStub, surface: client, ...base });
-
-    const assistantTurn = modelStub.sent[1].messages[1];
-    expect(assistantTurn.role).toBe("assistant");
-    expect(Array.isArray(assistantTurn.content)).toBe(true);
   });
 });

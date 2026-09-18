@@ -1,22 +1,27 @@
 import { randomUUID } from "node:crypto";
-import Anthropic from "@anthropic-ai/sdk";
 
 import { query } from "../src/lib/db";
 import { verifyReceipt } from "../src/lib/receipts";
+import { describeProvider } from "../src/lib/agent/provider";
+import { resolveProvider } from "../src/lib/agent/providers";
 import { runAgent } from "../src/lib/agent/runtime";
 import { AgentSurfaceClient } from "../src/lib/agent/surface-client";
 
 /**
  * Proves the agent runtime against a real database, a real model, and the real
- * HTTP surface. Requires a running server, because the whole point is that the
- * agent is an outside client:
+ * HTTP surface. Point it at any running deployment, because the whole point is
+ * that the agent is an outside client:
  *
- *   npm run dev
- *   AGENT_ACCESS_ORIGIN=http://localhost:3000 npm run agent-smoke
+ *   AGENT_ACCESS_ORIGIN=https://agent-access.vercel.app npm run agent-smoke
+ *
+ * The model provider comes from AGENT_MODEL_PROVIDER - Anthropic by default,
+ * or a free OpenAI-compatible endpoint. See README.
  */
 async function main() {
   const origin = process.env.AGENT_ACCESS_ORIGIN ?? "http://localhost:3000";
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required");
+  // Fails here, naming the exact missing variable, before touching the database.
+  const provider = resolveProvider();
+  process.stdout.write(`Using ${describeProvider(provider)} against ${origin}\n`);
 
   const health = await fetch(new URL("/api/health", origin)).catch(() => null);
   if (!health?.ok) throw new Error(`No server is answering at ${origin}. Start one with 'npm run dev'.`);
@@ -52,12 +57,11 @@ async function main() {
       ]);
     }
 
-    const anthropic = new Anthropic();
     const surface = new AgentSurfaceClient(origin, slug);
 
     // 1. A read-only goal the agent can actually finish.
     const read = await runAgent({
-      anthropic,
+      provider,
       surface,
       runId: `smoke_read_${suffix}`,
       goal: "How many widgets exist in this workspace, and what are they called? Use the tools to find out.",
@@ -77,7 +81,7 @@ async function main() {
     // 2. The gate. A goal that can only be met by the approval_required
     //    capability must stop the run before anything reaches the vendor.
     const gated = await runAgent({
-      anthropic,
+      provider,
       surface,
       runId: `smoke_gate_${suffix}`,
       goal: "Invite ops@example.com to this workspace as a member.",
@@ -89,7 +93,7 @@ async function main() {
     if (gated.invocationCount !== 0) throw new Error("A gated capability was invoked");
 
     process.stdout.write(
-      `Agent smoke test passed: discover → register → ${read.invocationCount} delegated invocation(s) → verified receipt ${receiptId} → answer\n` +
+      `Agent smoke test passed on ${describeProvider(provider)}: discover → register → ${read.invocationCount} delegated invocation(s) → verified receipt ${receiptId} → answer\n` +
         `  answer: ${read.finalText?.replaceAll("\n", " ").slice(0, 160)}\n` +
         "  gate:   approval_required halted the run with 0 invocations\n",
     );
