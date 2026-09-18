@@ -31,10 +31,27 @@ Capability admission fails closed. `read_only` is invocable, `reversible` only w
 
 Every run is bounded by steps, invocations, and wall-clock time, and records a named halt reason. Start one at `/dashboard/runs`, or `POST /api/agent-runs` with a `sandbox_slug` and a `goal`.
 
+### Choosing a model provider
+
+The runtime is not welded to one model vendor, because neither is the product. Set `AGENT_MODEL_PROVIDER`:
+
+| Value | Needs | Notes |
+| --- | --- | --- |
+| `anthropic` (default) | `ANTHROPIC_API_KEY` | Paid. A Claude Pro subscription does **not** include API access. |
+| `groq` | `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Free tier, rate limited |
+| `github-models` | `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Free with a GitHub account, rate limited |
+| `gemini` | `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Free tier via AI Studio |
+| `openrouter` | `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Some models are free |
+| `openai-compatible` | the above plus `AGENT_MODEL_BASE_URL` | Any other endpoint speaking OpenAI chat-completions with tool calling |
+
+Whichever you pick is recorded on the run as `provider/model`, so a receipt trail always names what produced it. An unknown provider name is an error rather than a silent fall back to the default — a run labelled `anthropic/claude-opus-5` that came from somewhere else would corrupt the only thing this product sells.
+
+The model must support tool calling. A model without it will answer without ever invoking a capability, and the run will complete having proved nothing.
+
 ## Stack
 
 - Next.js 16 App Router and TypeScript
-- Claude (`claude-opus-5`) via the Anthropic SDK for the agent runtime
+- Pluggable model provider for the agent runtime: Anthropic SDK by default, or any OpenAI-compatible endpoint
 - Clerk authentication
 - Neon Postgres
 - Vercel deployment
@@ -60,11 +77,15 @@ npm run smoke
 
 `check` runs lint, unit tests, TypeScript, and a production build. `smoke` creates an isolated temporary tenant in Neon and verifies the real register → delegate → credential → invoke → signed receipt → idempotent replay path, then removes the fixture.
 
-`agent-smoke` proves the agent runtime the same way, against a real database, a real model, and the real HTTP surface. It needs a running server, because the agent is an outside client:
+`agent-smoke` proves the agent runtime the same way, against a real database, a real model, and the real HTTP surface. Point it at any running deployment, because the agent is an outside client:
 
 ```bash
-npm run dev
-AGENT_ACCESS_ORIGIN=http://localhost:3000 npm run agent-smoke
+# free provider
+AGENT_MODEL_PROVIDER=groq AGENT_MODEL_API_KEY=... AGENT_MODEL=llama-3.3-70b-versatile \
+AGENT_ACCESS_ORIGIN=https://agent-access.vercel.app npm run agent-smoke
+
+# or the default
+ANTHROPIC_API_KEY=... AGENT_ACCESS_ORIGIN=https://agent-access.vercel.app npm run agent-smoke
 ```
 
 It asserts two things: a read-only goal completes with at least one delegated invocation whose receipt verifies, and a goal that can only be met by an `approval_required` capability halts with zero invocations.
