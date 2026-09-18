@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { usePathname } from "next/navigation";
-import { IconAperture, IconBox, IconFileCertificate, IconFileText, IconFlask, IconHome, IconKey, IconShieldCheck, IconTargetArrow, IconUsers } from "@tabler/icons-react";
+import { IconAperture, IconBox, IconFileCertificate, IconFileText, IconFlask, IconHome, IconKey, IconRobot, IconShieldCheck, IconTargetArrow, IconUsers } from "@tabler/icons-react";
 
 const items = [
   [IconHome, "Overview", "/dashboard"],
@@ -11,6 +11,7 @@ const items = [
   [IconShieldCheck, "Policies", "/dashboard/policies"],
   [IconFlask, "Sandboxes", "/dashboard/sandboxes"],
   [IconUsers, "Agent accounts", "/dashboard/agents"],
+  [IconRobot, "Agent runs", "/dashboard/runs"],
   [IconFileCertificate, "Receipts", "/dashboard/receipts"],
   [IconFileText, "Audit", "/dashboard/audit"],
   [IconKey, "Credentials", "/dashboard/credentials"],
