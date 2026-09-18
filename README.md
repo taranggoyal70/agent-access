@@ -46,7 +46,9 @@ The runtime is not welded to one model vendor, because neither is the product. S
 
 Whichever you pick is recorded on the run as `provider/model`, so a receipt trail always names what produced it. An unknown provider name is an error rather than a silent fall back to the default — a run labelled `anthropic/claude-opus-5` that came from somewhere else would corrupt the only thing this product sells.
 
-The model must support tool calling. A model without it will answer without ever invoking a capability, and the run will complete having proved nothing.
+The model must support tool calling, and the runtime checks before it commits to a run. A one-turn preflight probe asks the model to make a single tool call; if it answers in text instead, the run fails with `model_unsuitable` before an agent account is registered or anything is invoked.
+
+That check exists because the failure it prevents is the worst kind: a model that cannot call tools answers the goal from its own head, invokes nothing, and the run is recorded as `completed` while proving nothing about the published surface. Pass `skipPreflight` only when the provider is already known good.
 
 ## Stack
 

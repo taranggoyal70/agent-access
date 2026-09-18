@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { PREFLIGHT_TOOL_NAME } from "./preflight";
 import { runAgent } from "./runtime";
 import type { AgentToolDefinition, AgentToolResult, AgentTurn, ModelProvider } from "./provider";
 import { AgentSurfaceClient } from "./surface-client";
@@ -14,10 +15,12 @@ const CAPABILITIES: PublishedCapability[] = [
 /** A surface backed by the real client, so these tests exercise its wire format too. */
 function surface(options: { invoke?: (operationId: string) => { status: number; body: unknown } } = {}) {
   const invocations: { operationId: string; idempotencyKey: string }[] = [];
+  const registrations: string[] = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/capabilities")) return Response.json({ capabilities: CAPABILITIES });
     if (url.endsWith("/accounts")) {
+      registrations.push(url);
       return Response.json({ agent_account_id: "aa_1", delegation_id: "dl_1", capabilities: [], credential: "aa_sbx_x", expires_at: "2026-01-01" }, { status: 201 });
     }
     const operationId = decodeURIComponent(url.split("/invoke/")[1]);
@@ -29,7 +32,7 @@ function surface(options: { invoke?: (operationId: string) => { status: number; 
     };
     return Response.json(body, { status });
   }) as typeof fetch;
-  return { client: new AgentSurfaceClient("https://example.test", "acme", impl), invocations };
+  return { client: new AgentSurfaceClient("https://example.test", "acme", impl), invocations, registrations };
 }
 
 const answer = (text: string): AgentTurn => ({ stop: "answer", text, toolCalls: [], usage: { inputTokens: 10, outputTokens: 5 } });
@@ -40,8 +43,14 @@ const callTool = (id: string, name: string, input: Record<string, unknown> = {})
   usage: { inputTokens: 10, outputTokens: 5 },
 });
 
-/** Replays a script of turns and records the tools it was offered and the results it was fed. */
-function stubProvider(script: AgentTurn[]) {
+/**
+ * Replays a script of turns and records what it was offered and fed.
+ *
+ * It answers the preflight probe the way a tool-calling model would, so the
+ * tests below exercise the same path a real provider takes. `preflight: false`
+ * makes it behave like a model that cannot call tools.
+ */
+function stubProvider(script: AgentTurn[], options: { preflight?: boolean } = {}) {
   const offered: AgentToolDefinition[][] = [];
   const fed: AgentToolResult[][] = [];
   let turn = 0;
@@ -49,9 +58,15 @@ function stubProvider(script: AgentTurn[]) {
     id: "stub",
     model: "stub-1",
     start({ tools }) {
-      offered.push(tools);
+      const isProbe = tools.length === 1 && tools[0].name === PREFLIGHT_TOOL_NAME;
+      if (!isProbe) offered.push(tools);
       return {
         async next(input) {
+          if (isProbe) {
+            return options.preflight === false
+              ? answer("I have called the tool.")
+              : callTool("probe", PREFLIGHT_TOOL_NAME, { token: "ready" });
+          }
           if ("results" in input) fed.push(input.results);
           const next = script[Math.min(turn, script.length - 1)];
           turn += 1;
@@ -180,5 +195,51 @@ describe("runAgent", () => {
     expect(outcome.steps[0].detail.withheld).toEqual([
       { operation_id: "create_project", policy: "reversible", reason: "run does not allow writes" },
     ]);
+  });
+
+  it("refuses to run a model that cannot call tools, instead of recording a false pass", async () => {
+    const { client, registrations, invocations } = surface();
+    // Answers in text when asked to call a tool - the exact shape that would
+    // otherwise produce a `completed` run having proved nothing.
+    const { provider } = stubProvider([answer("There are 3 projects.")], { preflight: false });
+    const outcome = await runAgent({ provider, surface: client, ...base });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.haltReason).toBe("model_unsuitable");
+    expect(outcome.finalText).toBeNull();
+    // Nothing was registered and nothing was invoked: it stopped before
+    // touching the surface at all.
+    expect(registrations).toEqual([]);
+    expect(invocations).toEqual([]);
+  });
+
+  it("explains an unsuitable model in terms an operator can act on", async () => {
+    const { client } = surface();
+    const { provider } = stubProvider([answer("done")], { preflight: false });
+    const outcome = await runAgent({ provider, surface: client, ...base });
+
+    const step = outcome.steps.find((entry) => entry.kind === "preflight");
+    expect(step?.detail).toMatchObject({ ok: false, reason: "answered_in_text", provider: "stub", model: "stub-1" });
+    expect(String(step?.detail.detail)).toContain("Tool calling is required");
+  });
+
+  it("records a passing preflight before it registers an agent account", async () => {
+    const { client } = surface();
+    const { provider } = stubProvider([answer("ok")]);
+    const outcome = await runAgent({ provider, surface: client, ...base });
+
+    const preflightIndex = outcome.steps.findIndex((entry) => entry.kind === "preflight");
+    expect(preflightIndex).toBeGreaterThanOrEqual(0);
+    expect(outcome.steps[preflightIndex].detail).toMatchObject({ ok: true });
+    expect(outcome.status).toBe("completed");
+  });
+
+  it("skips the probe when the caller says the provider is known good", async () => {
+    const { client } = surface();
+    const { provider } = stubProvider([answer("ok")], { preflight: false });
+    const outcome = await runAgent({ provider, surface: client, ...base, skipPreflight: true });
+
+    expect(outcome.steps.some((entry) => entry.kind === "preflight")).toBe(false);
+    expect(outcome.status).toBe("completed");
   });
 });

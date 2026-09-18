@@ -1,3 +1,4 @@
+import { preflightToolCalling } from "./preflight";
 import type { AgentToolResult, ModelProvider } from "./provider";
 import { AgentSurfaceClient, SurfaceError, idempotencyKeyFor, type InvocationReceipt } from "./surface-client";
 import { buildToolset, type PublishedCapability } from "./tools";
@@ -8,11 +9,12 @@ export type HaltReason =
   | "time_limit"
   | "approval_required"
   | "upstream_error"
-  | "model_error";
+  | "model_error"
+  | "model_unsuitable";
 
 export type RunStep = {
   index: number;
-  kind: "plan" | "invocation" | "refusal" | "halt";
+  kind: "plan" | "preflight" | "invocation" | "refusal" | "halt";
   operationId?: string;
   idempotencyKey?: string;
   receiptId?: string;
@@ -75,6 +77,8 @@ export async function runAgent(options: {
   goal: string;
   allowWrites: boolean;
   bounds?: Partial<RunBounds>;
+  /** Skip the tool-calling probe. Only sensible when the provider is already known good. */
+  skipPreflight?: boolean;
   now?: () => number;
 }): Promise<RunOutcome> {
   const bounds = { ...DEFAULT_BOUNDS, ...options.bounds };
@@ -116,6 +120,17 @@ export async function runAgent(options: {
   if (!toolset.tools.length) {
     record({ kind: "halt", detail: { reason: "no capability is invocable under this run's policy" } });
     return finish("failed", null, "model_error");
+  }
+
+  if (!options.skipPreflight) {
+    const preflight = await preflightToolCalling(options.provider);
+    record({ kind: "preflight", detail: { ...preflight, provider: options.provider.id, model: options.provider.model } });
+    if (!preflight.ok) {
+      // Stop before registering an agent account. A model that cannot call
+      // tools would otherwise answer from its own head and the run would be
+      // recorded as completed while proving nothing.
+      return finish("failed", null, preflight.reason === "refused" ? "model_error" : "model_unsuitable");
+    }
   }
 
   const registration = await options.surface.register(

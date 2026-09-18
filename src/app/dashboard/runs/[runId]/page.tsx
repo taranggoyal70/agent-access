@@ -6,12 +6,18 @@ import { getRun } from "@/lib/agent/run-store";
 
 const KIND_LABEL: Record<string, string> = {
   plan: "Planned",
+  preflight: "Preflight",
   invocation: "Invoked",
   refusal: "Refused",
   halt: "Halted",
 };
 
 function detailText(kind: string, detail: Record<string, unknown>) {
+  if (kind === "preflight") {
+    return detail.ok === true
+      ? `${detail.provider}/${detail.model} supports tool calling`
+      : String(detail.detail ?? "preflight failed");
+  }
   if (kind === "plan" && detail.phase === "toolset") {
     const admitted = Array.isArray(detail.admitted) ? detail.admitted.length : 0;
     const withheld = Array.isArray(detail.withheld) ? detail.withheld.length : 0;
